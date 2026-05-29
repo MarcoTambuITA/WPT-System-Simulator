@@ -48,6 +48,6 @@ function h = wpt_heuristics(freq_Hz)
     %   eta(P_rx) = eta_peak * sigmoid((P_rx - P_thresh) / P_slope)
     %   Below P_thresh: diode barely conducts -> eta ~ 0
     %   Above P_thresh: eta plateaus at eta_peak
-    h.P_thresh = -20;          % dBm, 50% turn-on point
-    h.P_slope  = 8;            % dBm, soft turn-on (zero-bias Schottky)
+    h.P_thresh = 0;            % dBm, 50% turn-on point (P_thresh calibrated to heuristic only; load LTspice CSV for accurate low-power predictions)
+    h.P_slope  = 6;            % dBm, soft turn-on (zero-bias Schottky)
 end

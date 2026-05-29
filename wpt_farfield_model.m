@@ -126,6 +126,8 @@ function results = wpt_farfield_model(params)
     invalid_indices = params.d_vec < near_field_boundary_m;
     eff_system_pct(invalid_indices) = NaN;
     P_rx_dBm(invalid_indices) = NaN;
+    P_rx_W(invalid_indices) = NaN;
+    P_dc_W(invalid_indices) = NaN;
 
     % ---- 9. Pack Results ----
     results.eff_system_pct        = eff_system_pct;

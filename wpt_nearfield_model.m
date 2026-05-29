@@ -31,6 +31,9 @@ function results = wpt_nearfield_model(params)
 %   R_ac1, R_ac2      - AC resistances of TX and RX coils (Ohms)
 %   d_vec             - Distance vector (m)
 %   freq_Hz           - Operating frequency (Hz)
+%   radiansphere_m    - Radiansphere boundary = lambda / (2*pi)
+%   wire_exceeds_lam10 - Logical flag: true if coil wire > lambda/10
+%   max_wire_length_m - Longer of the two coil wire lengths (m)
 
     % ---- 1. Coil Geometry & Inductance ----
     d_wire_tx = awg_to_diameter(params.AWG_tx);
@@ -75,6 +78,10 @@ function results = wpt_nearfield_model(params)
     
     k_coil = M ./ sqrt(L1 * L2);
     
+    % Clamp k_coil to [0, 1.0] since d < r_coil is outside the
+    % high-accuracy window of the filament approximation.
+    k_coil = min(max(k_coil, 0), 1.0);
+    
     % ---- 5. Efficiency & Received Power ----
     U = k_coil .* sqrt(Q1 * Q2);
     
@@ -85,20 +92,49 @@ function results = wpt_nearfield_model(params)
     P_tx_W = 10^((params.P_tx_dBm - 30) / 10);
     P_rx_W = P_tx_W .* eta_inductive;
     
-    % ---- 6. Pack Results ----
-    results.eta_inductive_pct = eta_inductive_pct;
-    results.P_rx_W            = P_rx_W;
-    results.M                 = M;
-    results.k_coil            = k_coil;
-    results.U                 = U;
-    results.Q1                = Q1;
-    results.Q2                = Q2;
-    results.L1                = L1;
-    results.L2                = L2;
-    results.R_ac1             = R_ac1;
-    results.R_ac2             = R_ac2;
-    results.d_vec             = params.d_vec;
-    results.freq_Hz           = params.freq_Hz;
+    % ---- 6. Physics Masks ----
+    c_light = 299792458;
+    lambda = c_light / params.freq_Hz;
+    
+    % Mask 1: Radiansphere boundary — quasi-static Neumann formula is
+    % invalid when d > lambda/(2*pi), because phase-delay dominates.
+    radiansphere_m = lambda / (2 * pi);
+    invalid_nf = params.d_vec > radiansphere_m;
+    eta_inductive_pct(invalid_nf) = NaN;
+    P_rx_W(invalid_nf) = NaN;
+    M(invalid_nf) = NaN;
+    k_coil(invalid_nf) = NaN;
+    U(invalid_nf) = NaN;
+    
+    % Mask 2: Distributed element check — a coil ceases to be a lumped
+    % inductor when its unspooled wire length exceeds lambda/10.
+    max_wire_len = max(len_tx, len_rx);
+    wire_exceeds_lam10 = max_wire_len > (lambda / 10);
+    if wire_exceeds_lam10
+        eta_inductive_pct(:) = NaN;
+        P_rx_W(:) = NaN;
+    end
+    
+    % ---- 7. Pack Results ----
+    results.eta_inductive_pct  = eta_inductive_pct;
+    results.P_rx_W             = P_rx_W;
+    results.M                  = M;
+    results.k_coil             = k_coil;
+    results.U                  = U;
+    results.Q1                 = Q1;
+    results.Q2                 = Q2;
+    results.L1                 = L1;
+    results.L2                 = L2;
+    results.R_ac1              = R_ac1;
+    results.R_ac2              = R_ac2;
+    results.d_vec              = params.d_vec;
+    results.freq_Hz            = params.freq_Hz;
+    results.radiansphere_m     = radiansphere_m;
+    results.wire_exceeds_lam10 = wire_exceeds_lam10;
+    results.max_wire_length_m  = max_wire_len;
+    results.r_inner_tx         = r_in_tx;
+    results.r_inner_rx         = r_in_rx;
+    results.P_tx_W             = P_tx_W;
 end
 
 % -------------------------------------------------------------------------
