@@ -1,4 +1,10 @@
+# Block everything by default
 *
+
+# Allow directories so Git can traverse the folder structure
 !*/
+
+# Explicitly allow ONLY MATLAB scripts, the gitignore, and LTspice schematics
 !*.m
 !.gitignore
+!*.asc
