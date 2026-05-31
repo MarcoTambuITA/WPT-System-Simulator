@@ -5,6 +5,15 @@ classdef App_ideal < matlab.apps.AppBase
         UIFigure                      matlab.ui.Figure
         UIAxes                        matlab.ui.control.UIAxes
 
+        % --- Rectifier Comparison Axes ---
+        RectifierAxes                 matlab.ui.control.UIAxes
+        RectifierPanel                matlab.ui.container.Panel
+        LoadRectifierLogsButton       matlab.ui.control.Button
+        ClearRectifierButton          matlab.ui.control.Button
+        RectifierStatusLabel          matlab.ui.control.Label
+        RectifierRloadLabel           matlab.ui.control.Label
+        RectifierRloadEditField       matlab.ui.control.NumericEditField
+
         % --- Input Controls: Frequency ---
         FrequencyEditField            matlab.ui.control.NumericEditField
         FrequencyLabel                matlab.ui.control.Label
@@ -100,6 +109,7 @@ classdef App_ideal < matlab.apps.AppBase
         RectennaCurve = []         % Loaded [P_rx_dBm, eff] matrix from CSV/Log
         ParsedLogData = []         % Struct: {p_dbm, v_dc, filename} for live R_load recompute
         CurrentFreqZone = 'farfield'  % 'farfield', 'hybrid', 'nearfield'
+        RectifierDatasets = {}     % Cell array of structs: {p_dbm, v_dc, label} for comparison
     end
 
     % Core logic: heuristics, frequency zone, plot update, numerical readout
@@ -648,6 +658,82 @@ classdef App_ideal < matlab.apps.AppBase
             app.RectennaStatusLabel.FontColor = [0 0.5 0];
         end
 
+        function updateRectifierComparisonPlot(app)
+            % ============================================================
+            %  RECTIFIER TOPOLOGY COMPARISON (semilogx: η vs P_in)
+            %  Plots efficiency curves for all loaded rectifier .log files
+            %  on a shared semilogx chart for direct visual comparison.
+            % ============================================================
+            cla(app.RectifierAxes, 'reset');
+
+            if isempty(app.RectifierDatasets)
+                % Blank state — show placeholder text
+                text(app.RectifierAxes, 0.5, 0.5, ...
+                    {'Load rectifier .log files to compare'; 'topologies (half-wave, doubler, etc.)'}, ...
+                    'Units', 'normalized', ...
+                    'HorizontalAlignment', 'center', ...
+                    'FontSize', 11, 'Color', [0.5 0.5 0.5], ...
+                    'FontAngle', 'italic');
+                app.RectifierAxes.XLabel.String = '';
+                app.RectifierAxes.YLabel.String = '';
+                app.RectifierAxes.Title.String = '';
+                return;
+            end
+
+            hold(app.RectifierAxes, 'on');
+
+            R_load = app.RectifierRloadEditField.Value;
+
+            % Curated color palette for up to 6 topologies
+            palette = [
+                0.00  0.45  0.74;   % blue
+                0.85  0.33  0.10;   % vermilion
+                0.47  0.67  0.19;   % green
+                0.49  0.18  0.56;   % purple
+                0.93  0.69  0.13;   % gold
+                0.30  0.75  0.93;   % cyan
+            ];
+
+            for k = 1:length(app.RectifierDatasets)
+                ds = app.RectifierDatasets{k};
+                p_dbm = ds.p_dbm(:);
+                v_dc  = ds.v_dc(:);
+
+                % Convert input power: dBm → Watts
+                P_in_W = 10.^((p_dbm - 30) ./ 10);
+                % Convert input power: dBm → milliwatts (for x-axis)
+                P_in_mW = P_in_W * 1000;
+
+                % DC output power and RF-to-DC conversion efficiency
+                P_dc_W = (v_dc.^2) ./ R_load;
+                eta_pct = (P_dc_W ./ P_in_W) .* 100;
+
+                % Clamp to physical range [0, 100]%
+                eta_pct = min(max(eta_pct, 0), 100);
+
+                c = palette(mod(k - 1, size(palette, 1)) + 1, :);
+
+                semilogx(app.RectifierAxes, P_in_mW, eta_pct, '-o', ...
+                    'LineWidth', 2.2, ...
+                    'MarkerSize', 4, ...
+                    'Color', c, ...
+                    'MarkerFaceColor', c, ...
+                    'DisplayName', ds.label);
+            end
+
+            % Axes formatting
+            grid(app.RectifierAxes, 'on');
+            app.RectifierAxes.XScale = 'log';
+            app.RectifierAxes.XLabel.String = 'Available Input Power (mW)';
+            app.RectifierAxes.YLabel.String = ['RF-to-DC Efficiency ' char(951) ' (%)'];
+            app.RectifierAxes.Title.String = sprintf( ...
+                'Rectifier Topology Comparison  |  R_{load} = %g %s', R_load, char(937));
+            app.RectifierAxes.Title.FontWeight = 'bold';
+            legend(app.RectifierAxes, 'show', 'Location', 'northwest');
+            ylim(app.RectifierAxes, [0, 100]);
+            hold(app.RectifierAxes, 'off');
+        end
+
     end
 
     % Callbacks that handle component events
@@ -831,6 +917,74 @@ classdef App_ideal < matlab.apps.AppBase
             end
         end
 
+        % ---------- Rectifier Comparison: Load Multiple .log Files ----------
+        function LoadRectifierLogsButtonPushed(app, event)
+            % Multi-select file picker for rectifier .log files
+            [files, path] = uigetfile( ...
+                {'*.log', 'LTspice Log Files (*.log)'; '*.*', 'All Files'}, ...
+                'Select Rectifier Simulation Logs (multi-select)', ...
+                'MultiSelect', 'on');
+            if isequal(files, 0); return; end
+
+            % Normalize to cell array (single file returns char)
+            if ischar(files)
+                files = {files};
+            end
+
+            loaded = 0;
+            errors = {};
+            for k = 1:length(files)
+                filepath = fullfile(path, files{k});
+                try
+                    [p_dbm, v_dc] = parse_ltspice_log(filepath);
+
+                    % Build a readable label from the filename
+                    [~, name, ~] = fileparts(files{k});
+                    label = strrep(name, '_', ' ');
+
+                    ds = struct('p_dbm', p_dbm, 'v_dc', v_dc, ...
+                                'label', label, 'filename', files{k});
+                    app.RectifierDatasets{end+1} = ds;
+                    loaded = loaded + 1;
+                catch err
+                    errors{end+1} = sprintf('%s: %s', files{k}, err.message); %#ok<AGROW>
+                end
+            end
+
+            % Update status
+            n_total = length(app.RectifierDatasets);
+            if loaded > 0 && isempty(errors)
+                app.RectifierStatusLabel.Text = sprintf( ...
+                    '%d topology(ies) loaded (%d total)', loaded, n_total);
+                app.RectifierStatusLabel.FontColor = [0 0.5 0];
+            elseif loaded > 0
+                app.RectifierStatusLabel.Text = sprintf( ...
+                    '%d loaded, %d errors (%d total)', loaded, length(errors), n_total);
+                app.RectifierStatusLabel.FontColor = [0.8 0.5 0];
+            else
+                app.RectifierStatusLabel.Text = sprintf( ...
+                    'All %d file(s) failed to parse', length(errors));
+                app.RectifierStatusLabel.FontColor = [0.8 0 0];
+            end
+
+            updateRectifierComparisonPlot(app);
+        end
+
+        % ---------- Rectifier Comparison: Clear All ----------
+        function ClearRectifierButtonPushed(app, event)
+            app.RectifierDatasets = {};
+            app.RectifierStatusLabel.Text = 'No topologies loaded';
+            app.RectifierStatusLabel.FontColor = [0.5 0.5 0.5];
+            updateRectifierComparisonPlot(app);
+        end
+
+        % ---------- Rectifier Comparison: R_load Changed ----------
+        function RectifierRloadEditFieldValueChanged(app, event)
+            if ~isempty(app.RectifierDatasets)
+                updateRectifierComparisonPlot(app);
+            end
+        end
+
         % ---------- R_load Live Update ----------
         function RloadEditFieldValueChanged(app, event)
             if ~isempty(app.ParsedLogData)
@@ -935,7 +1089,7 @@ classdef App_ideal < matlab.apps.AppBase
 
             % ==================== FIGURE ====================
             app.UIFigure = uifigure('Visible', 'off');
-            app.UIFigure.Position = [100 100 1250 800];
+            app.UIFigure.Position = [100 50 1250 950];
             app.UIFigure.Name = 'WPT Link Budget Calculator';
             app.UIFigure.Color = [0.94 0.94 0.96];
 
@@ -944,7 +1098,54 @@ classdef App_ideal < matlab.apps.AppBase
             title(app.UIAxes, '')
             xlabel(app.UIAxes, 'Distance (m)')
             ylabel(app.UIAxes, 'System Efficiency (%)')
-            app.UIAxes.Position = [65 30 1140 300];
+            app.UIAxes.Position = [65 30 560 300];
+
+            % ==================== RECTIFIER COMPARISON PANEL ====================
+            app.RectifierPanel = uipanel(app.UIFigure);
+            app.RectifierPanel.Title = 'Rectifier Topology Comparison';
+            app.RectifierPanel.FontWeight = 'bold';
+            app.RectifierPanel.ForegroundColor = [0.15 0.3 0.55];
+            app.RectifierPanel.Position = [640 5 600 370];
+
+            % Comparison axes inside panel
+            app.RectifierAxes = uiaxes(app.RectifierPanel);
+            app.RectifierAxes.Position = [50 55 530 260];
+            title(app.RectifierAxes, '');
+            xlabel(app.RectifierAxes, 'Available Input Power (mW)');
+            ylabel(app.RectifierAxes, ['RF-to-DC Efficiency ' char(951) ' (%)']);
+            grid(app.RectifierAxes, 'on');
+
+            % Load button
+            app.LoadRectifierLogsButton = uibutton(app.RectifierPanel, 'push');
+            app.LoadRectifierLogsButton.ButtonPushedFcn = createCallbackFcn(app, @LoadRectifierLogsButtonPushed, true);
+            app.LoadRectifierLogsButton.Position = [10 15 130 28];
+            app.LoadRectifierLogsButton.Text = 'Load .log Files';
+            app.LoadRectifierLogsButton.BackgroundColor = [0.85 0.93 1.0];
+
+            % Clear button
+            app.ClearRectifierButton = uibutton(app.RectifierPanel, 'push');
+            app.ClearRectifierButton.ButtonPushedFcn = createCallbackFcn(app, @ClearRectifierButtonPushed, true);
+            app.ClearRectifierButton.Position = [150 15 100 28];
+            app.ClearRectifierButton.Text = 'Clear All';
+            app.ClearRectifierButton.BackgroundColor = [1.0 0.90 0.90];
+
+            % Status label
+            app.RectifierStatusLabel = uilabel(app.RectifierPanel);
+            app.RectifierStatusLabel.Position = [260 15 220 28];
+            app.RectifierStatusLabel.Text = 'No topologies loaded';
+            app.RectifierStatusLabel.FontColor = [0.5 0.5 0.5];
+
+            % R_load for comparison
+            app.RectifierRloadLabel = uilabel(app.RectifierPanel);
+            app.RectifierRloadLabel.Position = [490 15 55 28];
+            app.RectifierRloadLabel.Text = ['R_L (' char(937) '):'];
+            app.RectifierRloadLabel.FontWeight = 'bold';
+
+            app.RectifierRloadEditField = uieditfield(app.RectifierPanel, 'numeric');
+            app.RectifierRloadEditField.Limits = [1 100000];
+            app.RectifierRloadEditField.ValueChangedFcn = createCallbackFcn(app, @RectifierRloadEditFieldValueChanged, true);
+            app.RectifierRloadEditField.Position = [545 17 45 24];
+            app.RectifierRloadEditField.Value = 1000;
 
             % ==================== FREQUENCY CONTROLS ====================
             % Extended range: 100 kHz (0.1 MHz) to 10 GHz for Phase 3 near-field support
@@ -1340,6 +1541,9 @@ classdef App_ideal < matlab.apps.AppBase
 
             % Show the figure after all components are created
             app.UIFigure.Visible = 'on';
+
+            % Initialize rectifier comparison plot (blank state)
+            updateRectifierComparisonPlot(app);
         end
     end
 
